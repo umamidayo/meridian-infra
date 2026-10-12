@@ -16,7 +16,10 @@ for _ in $(seq 1 60); do
   fi
   sleep 2
 done
-curl -fsS "$ENDPOINT/_localstack/health" >/dev/null
+if ! curl -fsS "$ENDPOINT/_localstack/health" >/dev/null; then
+  echo "LocalStack is not reachable at $ENDPOINT. Check that the container is running (docker logs localstack)." >&2
+  exit 1
+fi
 
 if aws --endpoint-url "$ENDPOINT" s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
   echo "State bucket $BUCKET already exists."
