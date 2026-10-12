@@ -18,14 +18,14 @@ output "private_subnet_ids" {
   value       = aws_subnet.private[*].id
 }
 
-output "ecr_repository_name" {
-  description = "Name of the ECR repository."
-  value       = aws_ecr_repository.app.name
+output "registry_url" {
+  description = "Registry host to push container images to, e.g. <registry_url>/meridian-app:1.0.0."
+  value       = "localhost:${var.registry_port}"
 }
 
-output "ecr_repository_url" {
-  description = "URL to push container images to."
-  value       = aws_ecr_repository.app.repository_url
+output "registry_bucket_name" {
+  description = "S3 bucket backing the container registry's image storage."
+  value       = aws_s3_bucket.registry.bucket
 }
 
 output "s3_bucket_name" {

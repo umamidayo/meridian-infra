@@ -22,6 +22,24 @@ variable "localstack_endpoint" {
   default     = "http://localhost:4566"
 }
 
+variable "registry_image" {
+  description = "Docker Distribution image used for the container registry."
+  type        = string
+  default     = "registry:2.8.3"
+}
+
+variable "registry_port" {
+  description = "Host port the container registry listens on (bound to 127.0.0.1)."
+  type        = number
+  default     = 5000
+}
+
+variable "registry_s3_endpoint" {
+  description = "LocalStack S3 endpoint as seen from inside the registry container."
+  type        = string
+  default     = "http://host.docker.internal:4566"
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC."
   type        = string
@@ -37,4 +55,10 @@ variable "availability_zones" {
   description = "Availability zones to spread subnets across."
   type        = list(string)
   default     = ["us-east-1a", "us-east-1b"]
+}
+
+variable "docker_host" {
+  description = "Docker daemon address for the docker provider. Null falls back to DOCKER_HOST or the platform default socket."
+  type        = string
+  default     = null
 }

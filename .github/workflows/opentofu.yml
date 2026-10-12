@@ -59,7 +59,7 @@ jobs:
         run: |
           docker run -d --name localstack -p 4566:4566 \
             -e LOCALSTACK_AUTH_TOKEN \
-            -e SERVICES=s3,ec2,ecr,iam,sts \
+            -e SERVICES=s3,ec2,iam,sts \
             -v /var/run/docker.sock:/var/run/docker.sock \
             localstack/localstack:latest
 

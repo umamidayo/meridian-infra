@@ -4,8 +4,8 @@ services:
     ports:
       - "4566:4566"
     environment:
-      # ECR is a licensed LocalStack feature; export LOCALSTACK_AUTH_TOKEN before `docker compose up`.
+      # Current LocalStack images require an auth token (the free tier is enough); export LOCALSTACK_AUTH_TOKEN before `docker compose up`.
       LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
-      SERVICES: s3,ec2,ecr,iam,sts
+      SERVICES: s3,ec2,iam,sts
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

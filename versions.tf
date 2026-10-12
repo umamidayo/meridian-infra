@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.80"
     }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.6"
+    }
   }
 
   # Remote state lives in an S3 bucket inside LocalStack. The bucket is created

@@ -10,7 +10,6 @@ provider "aws" {
 
   endpoints {
     ec2 = var.localstack_endpoint
-    ecr = var.localstack_endpoint
     iam = var.localstack_endpoint
     s3  = var.localstack_endpoint
     sts = var.localstack_endpoint
@@ -23,4 +22,10 @@ provider "aws" {
       ManagedBy   = "opentofu"
     }
   }
+}
+
+# Uses DOCKER_HOST when docker_host is null. On Docker Desktop for Windows set
+# DOCKER_HOST=npipe:////./pipe/dockerDesktopLinuxEngine (or pass -var docker_host=...).
+provider "docker" {
+  host = var.docker_host
 }
