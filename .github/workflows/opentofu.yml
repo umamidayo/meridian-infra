@@ -1,0 +1,99 @@
+name: OpenTofu
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opentofu-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TOFU_VERSION: 1.13.0
+  LOCALSTACK_ENDPOINT: http://localhost:4566
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  validate:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: tofu fmt
+        run: tofu fmt -check -recursive -diff
+
+      - name: tofu validate
+        run: |
+          tofu init -backend=false
+          tofu validate
+
+  plan-apply:
+    name: ${{ github.event_name == 'pull_request' && 'Plan' || 'Plan and apply' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Start LocalStack
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        run: |
+          docker run -d --name localstack -p 4566:4566 \
+            -e LOCALSTACK_AUTH_TOKEN \
+            -e SERVICES=s3,ec2,ecr,iam,sts \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            localstack/localstack:latest
+
+      - name: Bootstrap state bucket
+        run: bash scripts/bootstrap-state.sh
+
+      - name: tofu init
+        run: tofu init
+
+      - name: tofu plan
+        run: |
+          tofu plan -out=tfplan
+          {
+            echo '## OpenTofu plan'
+            echo '```'
+            tofu show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: tofu apply
+        if: github.event_name != 'pull_request'
+        run: tofu apply -auto-approve tfplan
+
+      - name: Outputs
+        if: github.event_name != 'pull_request'
+        run: |
+          tofu output
+          {
+            echo '## Outputs'
+            echo '```json'
+            tofu output -json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: LocalStack logs
+        if: failure()
+        run: docker logs localstack | tail -200
