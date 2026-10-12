@@ -24,8 +24,8 @@ provider "aws" {
   }
 }
 
-# Uses DOCKER_HOST when docker_host is null. On Docker Desktop for Windows set
-# DOCKER_HOST=npipe:////./pipe/dockerDesktopLinuxEngine (or pass -var docker_host=...).
+# With docker_host null the provider uses DOCKER_HOST, else the platform default
+# (Docker Desktop's named pipe on Windows, /var/run/docker.sock on Linux).
 provider "docker" {
   host = var.docker_host
 }

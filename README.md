@@ -16,23 +16,34 @@ OpenTofu configuration for the Meridian cloud environment, run against [LocalSta
 
 - OpenTofu >= 1.10 (CI uses 1.13.0)
 - Docker
-- AWS CLI (used by `scripts/bootstrap-state.sh`)
 - A LocalStack auth token (the free tier is enough). Current LocalStack images refuse to start without one.
   Get it from https://app.localstack.cloud, or run `lstk login`.
 
 ECR isn't in the free LocalStack license, so the registry is a plain Docker registry container managed by the
 `kreuzwerker/docker` provider. Its image layers go to a LocalStack S3 bucket.
 
-## Running locally
+## Running locally on Windows
+
+Needs Docker Desktop, OpenTofu and `lstk` (run `lstk login` once). Bash and the AWS CLI aren't needed.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\local.ps1 up       # start LocalStack, create state bucket, init, apply
+powershell -ExecutionPolicy Bypass -File .\scripts\local.ps1 plan
+powershell -ExecutionPolicy Bypass -File .\scripts\local.ps1 output
+powershell -ExecutionPolicy Bypass -File .\scripts\local.ps1 destroy
+powershell -ExecutionPolicy Bypass -File .\scripts\local.ps1 down     # destroy, then stop LocalStack
+```
+
+`-ExecutionPolicy Bypass` is only needed if your execution policy blocks local scripts.
+Without `lstk`, set `$env:LOCALSTACK_AUTH_TOKEN` and the script falls back to `docker compose`.
+
+## Running locally on Linux/macOS
 
 ```bash
-export LOCALSTACK_AUTH_TOKEN=...      # PowerShell: $env:LOCALSTACK_AUTH_TOKEN = "..."
+export LOCALSTACK_AUTH_TOKEN=...
 docker compose up -d
-bash scripts/bootstrap-state.sh      # creates the state bucket
-# Docker Desktop on Windows only (PowerShell: $env:DOCKER_HOST = "npipe:////./pipe/dockerDesktopLinuxEngine")
-export DOCKER_HOST=npipe:////./pipe/dockerDesktopLinuxEngine
+bash scripts/bootstrap-state.sh      # creates the state bucket (needs the AWS CLI)
 tofu init
-tofu plan
 tofu apply
 tofu output
 ```
