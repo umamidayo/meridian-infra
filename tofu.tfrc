@@ -1,0 +1,16 @@
+# OpenTofu CLI configuration: an allow-list of provider sources.
+# CI sets TF_CLI_CONFIG_FILE to this file, so any provider outside the list
+# fails `tofu init` instead of being downloaded. Packages must also match the
+# hashes in .terraform.lock.hcl (init runs with -lockfile=readonly) and carry a
+# valid registry signature, which OpenTofu checks on every download.
+provider_installation {
+  direct {
+    include = [
+      "registry.opentofu.org/hashicorp/aws",
+      "registry.opentofu.org/hashicorp/helm",
+      "registry.opentofu.org/hashicorp/kubernetes",
+      "registry.opentofu.org/hashicorp/random",
+      "registry.opentofu.org/kreuzwerker/docker",
+    ]
+  }
+}

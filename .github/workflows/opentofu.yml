@@ -1,0 +1,383 @@
+name: OpenTofu
+
+# Supply chain (see docs/supply-chain.md):
+#   validate    fmt, validate, unit tests, provider allow-list, read-only lockfiles, chart digests
+#   build       source bundle + CycloneDX SBOM; on main also a signed SBOM attestation
+#   provenance  SLSA Build L3 provenance from the isolated slsa-github-generator (main only)
+#   plan-apply  verifies the bundle, then plans/applies from it, never from a checkout
+#   platform    same verification, then deploys kube-prometheus-stack + Argo CD on kind and smoke-tests it
+# All third-party actions are pinned to commit SHAs. The SLSA generator is pinned by tag, which
+# slsa-verifier requires to identify the trusted builder.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opentofu-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TOFU_VERSION: 1.13.0
+  LOCALSTACK_ENDPOINT: http://localhost:4566
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  BUNDLE: meridian-infra.tar.gz
+  SBOM: meridian-infra.cdx.json
+  PROVENANCE: meridian-infra.intoto.jsonl
+
+jobs:
+  validate:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    env:
+      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/tofu.tfrc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: tofu fmt
+        run: tofu fmt -check -recursive -diff
+
+      - name: Root module validate and test
+        run: |
+          tofu init -backend=false -lockfile=readonly
+          tofu validate
+          tofu test
+
+      - name: Platform module validate
+        working-directory: platform
+        run: |
+          tofu init -backend=false -lockfile=readonly
+          tofu validate
+
+      - name: Exporter unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.15.1
+
+      - name: Lint chart, check and unit-test Prometheus rules
+        run: |
+          helm lint --strict charts/pipeline-observability
+          helm template po charts/pipeline-observability --show-only templates/prometheusrule.yaml \
+            | yq '.spec' > tests/prometheus/rules.yaml
+          promtool() {
+            docker run --rm -v "$PWD/tests/prometheus:/t:ro" -w /t --entrypoint promtool \
+              prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2 "$@"
+          }
+          promtool check rules rules.yaml
+          promtool test rules slo_rules_test.yaml
+          for f in charts/pipeline-observability/files/dashboards/*.json; do python3 -m json.tool "$f" >/dev/null; done
+
+      - name: Verify pinned chart digests
+        run: python3 scripts/verify_charts.py
+
+  build:
+    name: Build and SBOM
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Sigstore keyless signing for the SBOM attestation
+      attestations: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    env:
+      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/tofu.tfrc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Package source bundle
+        # git archive only contains committed files, with mtimes from the commit, so the bundle is reproducible.
+        run: git archive --format=tar --prefix=meridian-infra/ HEAD | gzip -n > "$BUNDLE"
+
+      - name: Resolve providers for the SBOM
+        # Downloads the exact provider packages the lockfiles allow, so the SBOM covers their Go dependencies.
+        run: |
+          tofu init -backend=false -lockfile=readonly
+          tofu -chdir=platform init -backend=false -lockfile=readonly
+
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        id: syft
+        with:
+          syft-version: v1.55.0
+
+      - name: Generate SBOM
+        env:
+          SYFT: ${{ steps.syft.outputs.cmd }}
+        run: |
+          "$SYFT" scan dir:. \
+            --source-name meridian-infra --source-version "$GITHUB_SHA" \
+            --exclude './.git/**' --exclude "./$BUNDLE" \
+            -o "cyclonedx-json=$SBOM"
+          python3 scripts/verify_charts.py --sbom "$SBOM"
+          python3 scripts/sbom_summary.py "$SBOM" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hash release subjects
+        id: hash
+        run: |
+          sha256sum "$BUNDLE" "$SBOM" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "hashes=$(sha256sum "$BUNDLE" "$SBOM" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SBOM
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ env.BUNDLE }}
+          sbom-path: ${{ env.SBOM }}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: |
+            ${{ env.BUNDLE }}
+            ${{ env.SBOM }}
+          if-no-files-found: error
+          retention-days: 30
+
+  provenance:
+    name: SLSA provenance
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      actions: read # read the workflow run for the provenance
+      id-token: write # keyless signing in the isolated generator
+      contents: write # declared by the generator's release-upload job; GitHub checks it even though upload-assets is off
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      provenance-name: meridian-infra.intoto.jsonl
+
+  plan-apply:
+    name: ${{ github.event_name == 'pull_request' && 'Plan' || 'Plan and apply' }}
+    needs: [build, provenance]
+    # provenance is skipped outside main; the bundle is then only checked against the build job's hashes.
+    if: ${{ !cancelled() && needs.build.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.provenance.result) }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/meridian-infra/tofu.tfrc
+    defaults:
+      run:
+        working-directory: meridian-infra
+    steps:
+      # No checkout: this job only runs what the build job produced.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.RELEASE == 'true'
+        with:
+          name: ${{ env.PROVENANCE }}
+
+      - name: Check bundle against build hashes
+        working-directory: .
+        env:
+          HASHES: ${{ needs.build.outputs.hashes }}
+        run: echo "$HASHES" | base64 -d | sha256sum --strict -c -
+
+      - uses: slsa-framework/slsa-verifier/actions/installer@ea584f4502babc6f60d9bc799dbbb13c1caa9ee6 # v2.7.1
+        if: env.RELEASE == 'true'
+
+      - name: Verify SLSA provenance
+        if: env.RELEASE == 'true'
+        working-directory: .
+        run: |
+          slsa-verifier verify-artifact "$BUNDLE" "$SBOM" \
+            --provenance-path "$PROVENANCE" \
+            --source-uri "github.com/$GITHUB_REPOSITORY" \
+            --source-branch "$GITHUB_REF_NAME"
+
+      - name: Unpack bundle
+        working-directory: .
+        run: tar xzf "$BUNDLE"
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Start LocalStack
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        run: bash scripts/ci/start-localstack.sh
+
+      - name: Bootstrap state bucket
+        run: bash scripts/bootstrap-state.sh
+
+      - name: tofu init
+        run: tofu init -lockfile=readonly
+
+      - name: tofu plan
+        run: |
+          tofu plan -out=tfplan
+          {
+            echo '## OpenTofu plan'
+            echo '```'
+            tofu show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: tofu apply
+        if: env.RELEASE == 'true'
+        run: tofu apply -auto-approve tfplan
+
+      - name: Outputs
+        if: env.RELEASE == 'true'
+        run: |
+          tofu output
+          {
+            echo '## Outputs'
+            echo '```json'
+            tofu output -json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish release evidence to the artifacts bucket
+        if: env.RELEASE == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: |
+          bucket=$(tofu output -raw s3_bucket_name)
+          tofu show -json tfplan > ../plan.json
+
+          # Publish as the publisher role, which the bucket policy requires for writes.
+          creds=$(aws --endpoint-url "$LOCALSTACK_ENDPOINT" sts assume-role \
+            --role-arn "$(tofu output -raw artifact_publisher_role_arn)" \
+            --role-session-name "ci-$GITHUB_RUN_ID" --query Credentials --output json)
+          AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds")
+          AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds")
+          AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds")
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+
+          cd ..
+          s3() { aws --endpoint-url "$LOCALSTACK_ENDPOINT" s3 cp --only-show-errors "$1" "s3://$bucket/$2"; }
+          s3 "$BUNDLE" "releases/$GITHUB_SHA/$BUNDLE"
+          s3 "$SBOM" "sboms/$GITHUB_SHA/$SBOM"
+          s3 "$PROVENANCE" "attestations/$GITHUB_SHA/$PROVENANCE"
+          s3 plan.json "plans/$GITHUB_SHA/plan.json"
+
+          {
+            echo '## Published to the artifacts bucket'
+            echo '```'
+            aws --endpoint-url "$LOCALSTACK_ENDPOINT" s3 ls --recursive "s3://$bucket/"
+            echo '```'
+            echo '### Lifecycle rules'
+            echo '```json'
+            aws --endpoint-url "$LOCALSTACK_ENDPOINT" s3api get-bucket-lifecycle-configuration --bucket "$bucket"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: LocalStack logs
+        if: failure()
+        run: docker logs localstack | tail -200
+
+  platform:
+    name: Platform (kind)
+    needs: [build, provenance]
+    if: ${{ !cancelled() && needs.build.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.provenance.result) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # the pipeline exporter reads workflow runs with this job's token
+    env:
+      RELEASE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      TF_CLI_CONFIG_FILE: ${{ github.workspace }}/meridian-infra/tofu.tfrc
+    defaults:
+      run:
+        working-directory: meridian-infra
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: env.RELEASE == 'true'
+        with:
+          name: ${{ env.PROVENANCE }}
+
+      - name: Check bundle against build hashes
+        working-directory: .
+        env:
+          HASHES: ${{ needs.build.outputs.hashes }}
+        run: echo "$HASHES" | base64 -d | sha256sum --strict -c -
+
+      - uses: slsa-framework/slsa-verifier/actions/installer@ea584f4502babc6f60d9bc799dbbb13c1caa9ee6 # v2.7.1
+        if: env.RELEASE == 'true'
+
+      - name: Verify SLSA provenance
+        if: env.RELEASE == 'true'
+        working-directory: .
+        run: |
+          slsa-verifier verify-artifact "$BUNDLE" "$SBOM" \
+            --provenance-path "$PROVENANCE" \
+            --source-uri "github.com/$GITHUB_REPOSITORY" \
+            --source-branch "$GITHUB_REF_NAME"
+
+      - name: Unpack bundle
+        working-directory: .
+        run: tar xzf "$BUNDLE"
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Start LocalStack
+        env:
+          LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+        run: bash scripts/ci/start-localstack.sh
+
+      - name: Bootstrap state bucket
+        run: bash scripts/bootstrap-state.sh
+
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          config: meridian-infra/platform/kind-cluster.yaml
+          cluster_name: meridian
+
+      - name: Deploy platform
+        working-directory: meridian-infra/platform
+        env:
+          # Argo CD pulls the pipeline-observability chart from GitHub at the commit under test.
+          TF_VAR_gitops_revision: ${{ github.event.pull_request.head.sha || github.sha }}
+          TF_VAR_github_repository: ${{ github.repository }}
+          TF_VAR_github_token: ${{ github.token }}
+        run: |
+          tofu init -lockfile=readonly
+          tofu apply -auto-approve
+
+      - name: Smoke test
+        run: python3 scripts/smoke_platform.py
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n argocd get application pipeline-observability -o yaml || true
+          kubectl -n monitoring logs deploy/pipeline-exporter --tail=100 || true

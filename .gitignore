@@ -6,3 +6,8 @@ tfplan
 crash.log
 *.tfvars
 .env
+tests/prometheus/rules.yaml
+*.cdx.json
+*.intoto.jsonl
+meridian-infra.tar.gz
+__pycache__/

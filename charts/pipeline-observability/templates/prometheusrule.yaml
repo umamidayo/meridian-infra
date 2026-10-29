@@ -1,0 +1,95 @@
+{{- $success := .Values.slo.successObjective | float64 }}
+{{- $duration := .Values.slo.durationObjective | float64 }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pipeline-slo
+  labels:
+    {{- include "pipeline-observability.labels" . | nindent 4 }}
+spec:
+  groups:
+    # The exporter already reports each SLI per window (1d/7d/28d). These rules turn
+    # them into burn rates and remaining error budget. Pipelines run too rarely
+    # for 5m/1h windows, so the classic multi-window alerts use days instead.
+    - name: meridian-pipeline-slo.rules
+      interval: 1m
+      rules:
+        - record: meridian:pipeline_slo_objective
+          expr: vector({{ $success }})
+          labels:
+            slo: success
+        - record: meridian:pipeline_slo_objective
+          expr: vector({{ $duration }})
+          labels:
+            slo: duration
+
+        - record: meridian:pipeline_error_budget_burn_rate
+          expr: (1 - meridian_pipeline_success_ratio) / {{ subf 1.0 $success | printf "%.6g" }}
+          labels:
+            slo: success
+        - record: meridian:pipeline_error_budget_burn_rate
+          expr: (1 - meridian_pipeline_duration_within_slo_ratio) / {{ subf 1.0 $duration | printf "%.6g" }}
+          labels:
+            slo: duration
+
+        # 1 = untouched, 0 = spent, negative = SLO violated over the 28d window.
+        - record: meridian:pipeline_error_budget_remaining
+          expr: 1 - meridian:pipeline_error_budget_burn_rate{window="28d"}
+
+    - name: meridian-pipeline-slo.alerts
+      rules:
+        - alert: PipelineErrorBudgetFastBurn
+          # Burning 6x over a day and 2x over a week spends ~21% of the 28d budget per day.
+          expr: |
+            meridian:pipeline_error_budget_burn_rate{window="1d"} > 6
+            and ignoring(window)
+            meridian:pipeline_error_budget_burn_rate{window="7d"} > 2
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{`{{ $labels.workflow }}`}} is burning its {{`{{ $labels.slo }}`}} error budget fast"
+            description: "Burn rate over 1d is {{`{{ $value | printf \"%.1f\" }}`}}x the sustainable rate."
+
+        - alert: PipelineErrorBudgetSlowBurn
+          expr: |
+            meridian:pipeline_error_budget_burn_rate{window="7d"} > 2
+            and ignoring(window)
+            meridian:pipeline_error_budget_burn_rate{window="28d"} > 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{`{{ $labels.workflow }}`}} will exhaust its {{`{{ $labels.slo }}`}} error budget before the window ends"
+
+        - alert: PipelineSLOViolated
+          expr: meridian:pipeline_error_budget_remaining < 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{`{{ $labels.workflow }}`}} {{`{{ $labels.slo }}`}} SLO is violated over 28d"
+
+        - alert: DeploymentPipelineBroken
+          expr: meridian_dora_open_incident_seconds > {{ .Values.slo.openIncidentAlertSeconds }}
+          labels:
+            severity: critical
+          annotations:
+            summary: Deployments to main have been failing for over {{ div .Values.slo.openIncidentAlertSeconds 60 }} minutes
+            description: Time to restore is accumulating; fix forward or revert.
+
+        - alert: PipelineExporterDown
+          expr: absent(meridian_pipeline_exporter_up == 1)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Pipeline exporter cannot refresh from GitHub, so pipeline SLO and DORA data are stale
+
+        - alert: PipelineExporterRateLimited
+          expr: meridian_pipeline_exporter_github_rate_limit_remaining < 10
+          for: 10m
+          labels:
+            severity: info
+          annotations:
+            summary: Exporter is nearly out of GitHub API quota; set a token in the github-token secret
