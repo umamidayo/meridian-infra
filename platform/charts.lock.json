@@ -1,0 +1,26 @@
+{
+  "_comment": "Pinned third-party Helm charts. platform/*.tf reads versions from here; scripts/verify_charts.py checks each digest against the downloaded .tgz and adds the charts to the SBOM.",
+  "charts": [
+    {
+      "name": "kube-prometheus-stack",
+      "repository": "https://prometheus-community.github.io/helm-charts",
+      "version": "92.14.1",
+      "url": "https://github.com/prometheus-community/helm-charts/releases/download/kube-prometheus-stack-92.14.1/kube-prometheus-stack-92.14.1.tgz",
+      "sha256": "99e2d893fdbd4e397fa4fafd6298979f4622c2695a023dfb71615dd93d34a517"
+    },
+    {
+      "name": "argo-cd",
+      "repository": "https://argoproj.github.io/argo-helm",
+      "version": "10.11.6",
+      "url": "https://github.com/argoproj/argo-helm/releases/download/argo-cd-10.11.6/argo-cd-10.11.6.tgz",
+      "sha256": "d8f096d87513b41ff754053a7f9604c943bf29c15436a79226fd51595ea67d05"
+    },
+    {
+      "name": "argocd-apps",
+      "repository": "https://argoproj.github.io/argo-helm",
+      "version": "2.0.7",
+      "url": "https://github.com/argoproj/argo-helm/releases/download/argocd-apps-2.0.7/argocd-apps-2.0.7.tgz",
+      "sha256": "a4de21f7d35d8cba8d92b34d96260cd9451f18d174a2d37ca4c762af52836d4c"
+    }
+  ]
+}

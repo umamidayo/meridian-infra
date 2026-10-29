@@ -58,3 +58,33 @@ resource "docker_container" "registry" {
 
   depends_on = [aws_s3_bucket_public_access_block.registry]
 }
+
+# The registry pushes layers as multipart uploads; abandoned pushes would otherwise linger.
+resource "aws_s3_bucket_lifecycle_configuration" "registry" {
+  bucket = aws_s3_bucket.registry.id
+
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "registry" {
+  count = var.require_secure_transport ? 1 : 0
+
+  bucket = aws_s3_bucket.registry.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [merge(local.deny_insecure_transport, {
+      Resource = [aws_s3_bucket.registry.arn, "${aws_s3_bucket.registry.arn}/*"]
+    })]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.registry]
+}

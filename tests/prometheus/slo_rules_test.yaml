@@ -1,0 +1,115 @@
+# promtool unit tests for the pipeline SLO rules. CI renders the chart's
+# PrometheusRule spec to rules.yaml next to this file, then runs:
+#   promtool test rules tests/prometheus/slo_rules_test.yaml
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # 1d success ratio 50% (burn 10x), 7d 80% (4x), 28d 97% (0.6x): a fast burn that has not violated the SLO yet.
+  - interval: 1m
+    input_series:
+      - series: 'meridian_pipeline_success_ratio{workflow="opentofu.yml",window="1d"}'
+        values: "0.5x100"
+      - series: 'meridian_pipeline_success_ratio{workflow="opentofu.yml",window="7d"}'
+        values: "0.8x100"
+      - series: 'meridian_pipeline_success_ratio{workflow="opentofu.yml",window="28d"}'
+        values: "0.97x100"
+      - series: "meridian_pipeline_exporter_up"
+        values: "1x100"
+      - series: "meridian_dora_open_incident_seconds"
+        values: "0x100"
+
+    promql_expr_test:
+      - expr: round(meridian:pipeline_error_budget_remaining{slo="success"}, 0.001)
+        eval_time: 5m
+        exp_samples:
+          - labels: '{slo="success",workflow="opentofu.yml",window="28d"}'
+            value: 0.4
+      - expr: meridian:pipeline_error_budget_burn_rate{slo="success",window="1d"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'meridian:pipeline_error_budget_burn_rate{slo="success",workflow="opentofu.yml",window="1d"}'
+            value: 10
+
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PipelineErrorBudgetFastBurn
+        exp_alerts: [] # still pending (for: 10m)
+      - eval_time: 15m
+        alertname: PipelineErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: success
+              workflow: opentofu.yml
+              window: 1d
+            exp_annotations:
+              summary: opentofu.yml is burning its success error budget fast
+              description: Burn rate over 1d is 10.0x the sustainable rate.
+      - eval_time: 90m
+        alertname: PipelineErrorBudgetSlowBurn
+        exp_alerts: [] # 28d burn is below 1x
+      - eval_time: 90m
+        alertname: PipelineSLOViolated
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: PipelineExporterDown
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: DeploymentPipelineBroken
+        exp_alerts: []
+
+  # 28d success 90% against a 95% objective: budget overspent, SLO violated, slow burn.
+  - interval: 1m
+    input_series:
+      - series: 'meridian_pipeline_success_ratio{workflow="opentofu.yml",window="7d"}'
+        values: "0.85x100"
+      - series: 'meridian_pipeline_success_ratio{workflow="opentofu.yml",window="28d"}'
+        values: "0.90x100"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: PipelineErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slo: success
+              workflow: opentofu.yml
+              window: 7d
+            exp_annotations:
+              summary: opentofu.yml will exhaust its success error budget before the window ends
+      - eval_time: 70m
+        alertname: PipelineSLOViolated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slo: success
+              workflow: opentofu.yml
+              window: 28d
+            exp_annotations:
+              summary: opentofu.yml success SLO is violated over 28d
+
+  # Exporter stuck failing, and deploys broken for two hours.
+  - interval: 1m
+    input_series:
+      - series: "meridian_pipeline_exporter_up"
+        values: "0x30"
+      - series: "meridian_dora_open_incident_seconds"
+        values: "7200x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PipelineExporterDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Pipeline exporter cannot refresh from GitHub, so pipeline SLO and DORA data are stale
+      - eval_time: 1m
+        alertname: DeploymentPipelineBroken
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Deployments to main have been failing for over 60 minutes
+              description: Time to restore is accumulating; fix forward or revert.

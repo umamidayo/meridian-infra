@@ -37,3 +37,13 @@ output "s3_bucket_arn" {
   description = "ARN of the artifacts bucket."
   value       = aws_s3_bucket.artifacts.arn
 }
+
+output "artifact_publisher_role_arn" {
+  description = "Role CI assumes to publish releases, SBOMs, attestations, plans and metrics."
+  value       = aws_iam_role.artifact_publisher.arn
+}
+
+output "artifact_reader_role_arn" {
+  description = "Read-only role for consumers that fetch and verify released artifacts."
+  value       = aws_iam_role.artifact_reader.arn
+}

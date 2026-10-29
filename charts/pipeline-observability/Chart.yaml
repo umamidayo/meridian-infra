@@ -1,0 +1,6 @@
+apiVersion: v2
+name: pipeline-observability
+description: Pipeline SLIs/SLOs and DORA metrics for GitHub Actions, with Prometheus rules and Grafana dashboards.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,51 @@
+name: Pipeline metrics
+
+# Daily DORA and pipeline-SLO report from the GitHub Actions API, using the same
+# exporter code the cluster runs. Works without the kind platform.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      fail-on-violation:
+        description: Fail the run when a 28d SLO is violated
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read # list workflow runs
+
+jobs:
+  report:
+    name: DORA and SLO report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: charts/pipeline-observability/files
+
+      - name: Report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPORTER: charts/pipeline-observability/files/pipeline_exporter.py
+          FAIL_FLAG: ${{ inputs.fail-on-violation && '--fail-on-violation' || '' }}
+        run: |
+          python3 -I "$EXPORTER" --once --format json > pipeline-metrics.json
+          status=0
+          python3 -I "$EXPORTER" --once --format markdown ${FAIL_FLAG:+"$FAIL_FLAG"} > report.md 2> stderr.txt || status=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < report.md
+          grep '^SLO violated: ' stderr.txt | while read -r line; do
+            echo "::warning title=Pipeline SLO::${line#SLO violated: }"
+          done || true
+          [ "$status" -eq 0 ] || cat stderr.txt
+          exit "$status"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pipeline-metrics
+          path: pipeline-metrics.json
+          retention-days: 90 # same as the metrics/ lifecycle rule

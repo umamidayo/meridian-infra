@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-exporter
+  labels:
+    {{- include "pipeline-observability.labels" . | nindent 4 }}
+data:
+  pipeline_exporter.py: |-
+    {{- .Files.Get "files/pipeline_exporter.py" | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-exporter
+  labels:
+    {{- include "pipeline-observability.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pipeline-observability.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pipeline-observability.labels" . | nindent 8 }}
+      annotations:
+        checksum/script: {{ .Files.Get "files/pipeline_exporter.py" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: exporter
+          image: {{ .Values.exporter.image }}
+          command: ["python", "-I", "/app/pipeline_exporter.py"]
+          env:
+            - name: GITHUB_REPOSITORY
+              value: {{ .Values.github.repository | quote }}
+            - name: DEFAULT_BRANCH
+              value: {{ .Values.github.defaultBranch | quote }}
+            - name: DEPLOY_WORKFLOW
+              value: {{ .Values.github.deployWorkflow | quote }}
+            - name: DURATION_SLO_SECONDS
+              value: {{ .Values.slo.durationThresholdSeconds | quote }}
+            - name: SUCCESS_OBJECTIVE
+              value: {{ .Values.slo.successObjective | quote }}
+            - name: DURATION_OBJECTIVE
+              value: {{ .Values.slo.durationObjective | quote }}
+            - name: POLL_INTERVAL_SECONDS
+              value: {{ .Values.exporter.pollIntervalSeconds | quote }}
+            - name: PORT
+              value: {{ .Values.exporter.port | quote }}
+            {{- with .Values.github.tokenSecret }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name }}
+                  key: {{ .key }}
+                  optional: true
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.exporter.port }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.exporter.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: pipeline-exporter
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-exporter
+  labels:
+    {{- include "pipeline-observability.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "pipeline-observability.selector" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.exporter.port }}
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pipeline-exporter
+  labels:
+    {{- include "pipeline-observability.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "pipeline-observability.selector" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}

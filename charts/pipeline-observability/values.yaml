@@ -1,0 +1,36 @@
+github:
+  repository: umamidayo/meridian-infra
+  defaultBranch: main
+  # Workflow file whose push/dispatch runs on the default branch count as deployments.
+  deployWorkflow: opentofu.yml
+  # Optional token secret; without one the exporter uses the unauthenticated API (60 requests/hour).
+  tokenSecret:
+    name: github-token
+    key: token
+
+slo:
+  # Share of default-branch runs that must succeed.
+  successObjective: 0.95
+  # Share of successful runs that must finish within durationThresholdSeconds.
+  durationObjective: 0.90
+  durationThresholdSeconds: 900
+  # Alert when the current deploy failure has lasted this long.
+  openIncidentAlertSeconds: 3600
+
+exporter:
+  # Stdlib-only script mounted from a ConfigMap, so the only image is a digest-pinned Python base.
+  image: python:3.12-alpine@sha256:5789aa194f757888f41fa3d48e14b6feaa1b57c0af0b56fcb1372d6474d3bff0
+  pollIntervalSeconds: 300
+  port: 9102
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 96Mi
+
+serviceMonitor:
+  interval: 60s
+
+dashboards:
+  folder: Meridian

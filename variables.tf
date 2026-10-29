@@ -25,7 +25,7 @@ variable "localstack_endpoint" {
 variable "registry_image" {
   description = "Docker Distribution image used for the container registry."
   type        = string
-  default     = "registry:2.8.3"
+  default     = "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 }
 
 variable "registry_port" {
@@ -61,4 +61,51 @@ variable "docker_host" {
   description = "Docker daemon address for the docker provider. Null falls back to DOCKER_HOST or the platform default socket."
   type        = string
   default     = null
+}
+
+variable "github_repository" {
+  description = "GitHub repository (owner/name) whose main-branch workflows may assume the artifact publisher role."
+  type        = string
+  default     = "umamidayo/meridian-infra"
+}
+
+variable "require_secure_transport" {
+  description = "Add a bucket policy statement that denies non-TLS requests. LocalStack only enforces bucket policies with ENFORCE_IAM=1; keep this on for real AWS."
+  type        = bool
+  default     = true
+}
+
+variable "artifact_admin_principal_arns" {
+  description = "Principals exempt from the artifact write/delete guards (break-glass and the identity running OpenTofu). Empty means the account root."
+  type        = list(string)
+  default     = []
+}
+
+variable "artifact_retention" {
+  description = "Lifecycle settings, in days, for each artifact class in the artifacts bucket."
+  type = object({
+    plans_expire_days        = optional(number, 30)
+    metrics_expire_days      = optional(number, 90)
+    infrequent_access_days   = optional(number, 30)
+    glacier_days             = optional(number, 90)
+    releases_expire_days     = optional(number, 400)
+    attestations_expire_days = optional(number, 730)
+    noncurrent_expire_days   = optional(number, 30)
+    abort_multipart_days     = optional(number, 7)
+  })
+  default = {}
+
+  validation {
+    condition     = var.artifact_retention.infrequent_access_days >= 30
+    error_message = "S3 requires objects to be at least 30 days old before moving to STANDARD_IA."
+  }
+
+  validation {
+    condition = (
+      var.artifact_retention.glacier_days > var.artifact_retention.infrequent_access_days &&
+      var.artifact_retention.releases_expire_days > var.artifact_retention.glacier_days &&
+      var.artifact_retention.attestations_expire_days >= var.artifact_retention.releases_expire_days
+    )
+    error_message = "Retention must increase: infrequent_access < glacier < releases_expire <= attestations_expire, so provenance outlives the artifacts it describes."
+  }
 }
